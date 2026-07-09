@@ -49,7 +49,8 @@ def _build_label_and_clean(processed, drop_small_open=True):
     processed['label'] = (processed['open_t5'] - processed['open_t1']) / (processed['open_t1'] + 1e-12)
     processed = processed.dropna(subset=['label'])
 
-    processed.drop(columns=['open_t1', 'open_t5'], inplace=True)
+    # 保留abs_return用于评估，删除中间变量
+    processed.drop(columns=['open_t1', 'open_t5', 'market_return', 'excess_return'], inplace=True)
     return processed
 
 

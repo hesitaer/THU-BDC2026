@@ -543,15 +543,15 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
     # 1. 确保数据按股票和时间排序
     data = data.sort_values(['instrument', 'datetime']).reset_index(drop=True)
     
-    # 2. 确保每只股票都有 'label'（次日涨跌幅），否则无法作为 target
-    data = data.dropna(subset=['label'])
+    # 2. 确保每只股票都有 'label' 和 'abs_return'，否则无法作为 target
+    data = data.dropna(subset=['label', 'abs_return'])
     
     # 3. 为每只股票生成所有滑动窗口
     # 仅保留满足以下条件的 end_date：
     # - 历史窗口长度满足 sequence_length
     # - end_date 之后存在 5 条未来数据
     # - 这 5 条未来数据在自然日上连续（任意节假日/周末导致的日期跳跃都会被过滤）
-    all_windows = []  # 每个元素: (end_date, stock_code, sequence, target)
+    all_windows = []  # 每个元素: (end_date, stock_code, sequence, abs_return, label)
 
     print("Step 1: 为每只股票生成滑动窗口...")
     grouped = data.groupby('instrument')
@@ -560,9 +560,10 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
         if len(group) < sequence_length:
             continue
         
-        # 提取特征和 label
+        # 提取特征、绝对收益和排名标签
         feature_values = group[features].values.astype(np.float32)  # (T, F)
-        labels = group['label'].values.astype(np.float32)           # (T,)
+        abs_returns = group['abs_return'].values.astype(np.float32) # (T,) 用于评估
+        labels = group['label'].values.astype(np.float32)           # (T,) 用于排名
         dates = group['datetime'].values                            # (T,)
         dates_day = group['datetime'].values.astype('datetime64[D]')
 
@@ -583,13 +584,14 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
                 continue
 
             seq = feature_values[i : i + sequence_length]   # (L, F)
-            target = labels[end_idx]                        # label 对应窗口最后一天的次日涨跌幅
+            abs_return = abs_returns[end_idx]               # 绝对收益用于评估
+            label = labels[end_idx]                         # 排名标签用于损失计算
             end_date = dates[end_idx]                       # 窗口结束日期（即预测日）
-            all_windows.append((end_date, stock_code, seq, target))
+            all_windows.append((end_date, stock_code, seq, abs_return, label))
 
     # 4. 转为 DataFrame 便于按日期聚合
     print("Step 2: 按日期聚合窗口...")
-    window_df = pd.DataFrame(all_windows, columns=['date', 'stock_code', 'seq', 'target'])
+    window_df = pd.DataFrame(all_windows, columns=['date', 'stock_code', 'seq', 'abs_return', 'label'])
 
     # 5. 按 date 分组，构建每日样本
     sequences = []
@@ -612,14 +614,15 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
         
         # 提取数据
         day_seqs = np.stack(group['seq'].values)          # (N, L, F)
-        day_targets = group['target'].values              # (N,)
+        day_targets = group['abs_return'].values          # (N,) 绝对收益用于评估指标
+        day_labels = group['label'].values                # (N,) 排名标签
         day_stocks = group['stock_code'].tolist()         # [str]
 
-        # 计算 relevance（与原逻辑一致）
-        sorted_indices = np.argsort(day_targets)[::-1]
-        relevance = np.zeros_like(day_targets, dtype=np.float32)
+        # 计算 relevance（基于排名标签）
+        sorted_indices = np.argsort(day_labels)[::-1]
+        relevance = np.zeros_like(day_labels, dtype=np.float32)
         for rank, idx in enumerate(sorted_indices):
-            relevance[idx] = len(day_targets) - rank
+            relevance[idx] = len(day_labels) - rank
 
         sequences.append(day_seqs)
         targets.append(day_targets)
