@@ -1,6 +1,6 @@
 # 配置参数
 sequence_length = 60
-feature_num = '158+39'
+feature_num = 'corr_filtered'
 config = {
     'sequence_length': sequence_length,   # 使用过去60个交易日的数据（排序任务可以用稍短的序列）
     'd_model': 256,          # Transformer输入维度
@@ -9,7 +9,7 @@ config = {
     'dim_feedforward': 512, # 前馈网络维度
     'batch_size': 4,        # 排序任务batch_size可以小一些，因为每个batch包含更多股票
     'num_epochs': 50,       # 排序任务可能需要更多epochs
-    'learning_rate': 1e-5,  # 稍微降低学习率
+    'learning_rate': 1e-5,  # 恢复基线学习率
     'dropout': 0.1,
     'feature_num': feature_num,
     'max_grad_norm': 5.0,

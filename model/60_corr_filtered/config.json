@@ -1,0 +1,18 @@
+{
+    "sequence_length": 60,
+    "d_model": 256,
+    "nhead": 4,
+    "num_layers": 3,
+    "dim_feedforward": 512,
+    "batch_size": 4,
+    "num_epochs": 50,
+    "learning_rate": 1e-05,
+    "dropout": 0.1,
+    "feature_num": "corr_filtered",
+    "max_grad_norm": 5.0,
+    "pairwise_weight": 1,
+    "base_weight": 1.0,
+    "top5_weight": 2.0,
+    "output_dir": "./model/60_corr_filtered",
+    "data_path": "./data"
+}

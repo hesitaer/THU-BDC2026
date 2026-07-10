@@ -13,17 +13,12 @@ def engineer_features_158plus39(df):
     """
     计算39个技术指标特征和158个Alpha特征，并合并它们。
     """
-    # 为了避免修改原始DataFrame，创建一个副本
     df_copy = df.copy()
 
-    # 1. 计算158个Alpha特征
     df_158 = engineer_features(df_copy)
     
-    # 2. 计算39个技术指标特征
     df_39 = engineer_features_39(df_copy)
 
-    # 3. 合并两个DataFrame
-    # 首先，从df_39中选取我们需要的列，避免与df_158中的原始列（如'开盘'）重复
     feature_cols_39 = [
         'sma_5', 'sma_20', 'ema_12', 'ema_26', 'rsi', 'macd', 'macd_signal', 
         'volume_change', 'obv', 'volume_ma_5', 'volume_ma_20', 'volume_ratio', 
@@ -32,16 +27,52 @@ def engineer_features_158plus39(df):
         'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread'
     ]
     
-    # 确保所有列都存在于df_39中
     feature_cols_39_exist = [col for col in feature_cols_39 if col in df_39.columns]
     
-    # 合并，df_158 已经包含了原始列和158个特征
     df_final = pd.concat([df_158, df_39[feature_cols_39_exist]], axis=1)
 
-    # 4. 处理可能因为合并产生的重复列（如果两个函数生成了同名特征）
     df_final = df_final.loc[:,~df_final.columns.duplicated()]
 
-    # 5. 统一处理inf和NaN
+    df_final.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df_final.fillna(0, inplace=True)
+    
+    return df_final
+
+
+REDUNDANT_FEATURES = {
+    'CNTD5', 'KLEN', 'MA60', 'MAX10', 'MAX20', 'MAX30', 'MAX5', 'MAX60',
+    'MIN10', 'MIN20', 'MIN30', 'MIN5', 'MIN60', 'OPEN0',
+    'QTLD10', 'QTLD20', 'QTLD30', 'QTLD5', 'QTLD60',
+    'QTLU10', 'QTLU20', 'QTLU30', 'QTLU5', 'QTLU60',
+    'SUMD5', 'SUMN60', 'VSUMD5', 'VSUMN60',
+    'boll_mid', 'ema_12', 'ema_26', 'ema_60', 'macd_signal', 'sma_20', 'sma_5',
+    '收盘', '最低', '最高'
+}
+
+
+def engineer_features_corr_filtered(df):
+    """
+    根据相关性分析筛选后的特征集。
+    移除了38个高度冗余特征(相关系数>0.95)，保留约159个特征。
+    冗余特征包括：价格特征(收盘/最低/最高)、均线特征(sma/ema/boll_mid)、
+    分位数特征(QTLU/QTLD)、极值特征(MAX/MIN)等。
+    """
+    df_copy = df.copy()
+
+    df_158 = engineer_features(df_copy)
+    
+    df_39 = engineer_features_39(df_copy)
+
+    df_combined = pd.concat([df_158, df_39], axis=1)
+    df_combined = df_combined.loc[:,~df_combined.columns.duplicated()]
+
+    all_feature_cols = [col for col in df_combined.columns 
+                        if col not in ['股票代码', '日期', 'instrument']]
+    
+    filtered_cols = [col for col in all_feature_cols if col not in REDUNDANT_FEATURES]
+    
+    df_final = df_combined[['股票代码', '日期'] + filtered_cols]
+
     df_final.replace([np.inf, -np.inf], np.nan, inplace=True)
     df_final.fillna(0, inplace=True)
     
@@ -543,15 +574,15 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
     # 1. 确保数据按股票和时间排序
     data = data.sort_values(['instrument', 'datetime']).reset_index(drop=True)
     
-    # 2. 确保每只股票都有 'label' 和 'abs_return'，否则无法作为 target
-    data = data.dropna(subset=['label', 'abs_return'])
+    # 2. 确保每只股票都有 'label'（次日涨跌幅），否则无法作为 target
+    data = data.dropna(subset=['label'])
     
     # 3. 为每只股票生成所有滑动窗口
     # 仅保留满足以下条件的 end_date：
     # - 历史窗口长度满足 sequence_length
     # - end_date 之后存在 5 条未来数据
     # - 这 5 条未来数据在自然日上连续（任意节假日/周末导致的日期跳跃都会被过滤）
-    all_windows = []  # 每个元素: (end_date, stock_code, sequence, abs_return, label)
+    all_windows = []  # 每个元素: (end_date, stock_code, sequence, target)
 
     print("Step 1: 为每只股票生成滑动窗口...")
     grouped = data.groupby('instrument')
@@ -560,10 +591,10 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
         if len(group) < sequence_length:
             continue
         
-        # 提取特征、绝对收益和排名标签
+        # 提取特征和标签
         feature_values = group[features].values.astype(np.float32)  # (T, F)
-        abs_returns = group['abs_return'].values.astype(np.float32) # (T,) 用于评估
-        labels = group['label'].values.astype(np.float32)           # (T,) 用于排名
+        abs_returns = group['abs_return'].values.astype(np.float32) # 真实涨跌幅（用于评估）
+        labels = group['label'].values.astype(np.float32)           # 排名标签（用于训练）
         dates = group['datetime'].values                            # (T,)
         dates_day = group['datetime'].values.astype('datetime64[D]')
 
@@ -584,14 +615,14 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
                 continue
 
             seq = feature_values[i : i + sequence_length]   # (L, F)
-            abs_return = abs_returns[end_idx]               # 绝对收益用于评估
-            label = labels[end_idx]                         # 排名标签用于损失计算
+            target = abs_returns[end_idx]                   # 真实涨跌幅（用于评估指标）
+            relevance = labels[end_idx]                     # 排名标签（用于训练损失）
             end_date = dates[end_idx]                       # 窗口结束日期（即预测日）
-            all_windows.append((end_date, stock_code, seq, abs_return, label))
+            all_windows.append((end_date, stock_code, seq, target, relevance))
 
     # 4. 转为 DataFrame 便于按日期聚合
     print("Step 2: 按日期聚合窗口...")
-    window_df = pd.DataFrame(all_windows, columns=['date', 'stock_code', 'seq', 'abs_return', 'label'])
+    window_df = pd.DataFrame(all_windows, columns=['date', 'stock_code', 'seq', 'target', 'relevance'])
 
     # 5. 按 date 分组，构建每日样本
     sequences = []
@@ -614,19 +645,13 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
         
         # 提取数据
         day_seqs = np.stack(group['seq'].values)          # (N, L, F)
-        day_targets = group['abs_return'].values          # (N,) 绝对收益用于评估指标
-        day_labels = group['label'].values                # (N,) 排名标签
+        day_targets = group['target'].values              # (N,) 真实涨跌幅（用于评估）
+        day_relevance = group['relevance'].values         # (N,) 排名标签（用于训练损失）
         day_stocks = group['stock_code'].tolist()         # [str]
-
-        # 计算 relevance（基于排名标签）
-        sorted_indices = np.argsort(day_labels)[::-1]
-        relevance = np.zeros_like(day_labels, dtype=np.float32)
-        for rank, idx in enumerate(sorted_indices):
-            relevance[idx] = len(day_labels) - rank
 
         sequences.append(day_seqs)
         targets.append(day_targets)
-        relevance_scores.append(relevance)
+        relevance_scores.append(day_relevance)
         stock_indices.append(day_stocks)
 
     print(f"成功创建 {len(sequences)} 个训练样本")

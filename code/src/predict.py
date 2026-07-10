@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from config import config
 from model import StockTransformer
-from utils import engineer_features_39, engineer_features_158plus39
+from utils import engineer_features_39, engineer_features_158plus39, engineer_features_corr_filtered
 
 
 feature_cloums_map = {
@@ -41,12 +41,44 @@ feature_cloums_map = {
 		'volume_ma_5', 'volume_ma_20', 'volume_ratio', 'kdj_k', 'kdj_d', 'kdj_j', 'boll_mid', 'boll_std',
 		'atr_14', 'ema_60', 'volatility_10', 'volatility_20', 'return_1', 'return_5', 'return_10',
 		'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread'
+	],
+	'corr_filtered': [
+		'instrument', '开盘', '成交量', '成交额', '振幅', '涨跌额', '换手率', '涨跌幅',
+		'KMID', 'KMID2', 'KUP', 'KUP2', 'KLOW', 'KLOW2', 'KSFT', 'KSFT2',
+		'HIGH0', 'LOW0', 'VWAP0', 'ROC5', 'ROC10', 'ROC20', 'ROC30', 'ROC60',
+		'MA5', 'MA10', 'MA20', 'MA30', 'STD5', 'STD10', 'STD20', 'STD30', 'STD60',
+		'BETA5', 'BETA10', 'BETA20', 'BETA30', 'BETA60', 'RSQR5', 'RSQR10', 'RSQR20', 'RSQR30', 'RSQR60',
+		'RESI5', 'RESI10', 'RESI20', 'RESI30', 'RESI60',
+		'RANK5', 'RANK10', 'RANK20', 'RANK30', 'RANK60',
+		'RSV5', 'RSV10', 'RSV20', 'RSV30', 'RSV60',
+		'IMAX5', 'IMAX10', 'IMAX20', 'IMAX30', 'IMAX60',
+		'IMIN5', 'IMIN10', 'IMIN20', 'IMIN30', 'IMIN60',
+		'IMXD5', 'IMXD10', 'IMXD20', 'IMXD30', 'IMXD60',
+		'CORR5', 'CORR10', 'CORR20', 'CORR30', 'CORR60',
+		'CORD5', 'CORD10', 'CORD20', 'CORD30', 'CORD60',
+		'CNTP5', 'CNTP10', 'CNTP20', 'CNTP30', 'CNTP60',
+		'CNTN5', 'CNTN10', 'CNTN20', 'CNTN30', 'CNTN60',
+		'CNTD10', 'CNTD20', 'CNTD30', 'CNTD60',
+		'SUMP5', 'SUMP10', 'SUMP20', 'SUMP30', 'SUMP60',
+		'SUMN5', 'SUMN10', 'SUMN20', 'SUMN30',
+		'SUMD10', 'SUMD20', 'SUMD30', 'SUMD60',
+		'VMA5', 'VMA10', 'VMA20', 'VMA30', 'VMA60',
+		'VSTD5', 'VSTD10', 'VSTD20', 'VSTD30', 'VSTD60',
+		'WVMA5', 'WVMA10', 'WVMA20', 'WVMA30', 'WVMA60',
+		'VSUMP5', 'VSUMP10', 'VSUMP20', 'VSUMP30', 'VSUMP60',
+		'VSUMN5', 'VSUMN10', 'VSUMN20', 'VSUMN30',
+		'VSUMD10', 'VSUMD20', 'VSUMD30', 'VSUMD60',
+		'rsi', 'macd', 'volume_change', 'obv', 'volume_ma_5', 'volume_ma_20', 'volume_ratio',
+		'kdj_k', 'kdj_d', 'kdj_j', 'boll_std', 'atr_14',
+		'volatility_10', 'volatility_20', 'return_1', 'return_5', 'return_10',
+		'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread'
 	]
 }
 
 feature_engineer_func_map = {
 	'39': engineer_features_39,
 	'158+39': engineer_features_158plus39,
+	'corr_filtered': engineer_features_corr_filtered,
 }
 
 

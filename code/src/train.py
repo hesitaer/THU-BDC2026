@@ -9,7 +9,7 @@ from tqdm import tqdm
 from tensorboardX import SummaryWriter
 from config import config
 from model import StockTransformer
-from utils import engineer_features_39, engineer_features_158plus39
+from utils import engineer_features_39, engineer_features_158plus39, engineer_features_corr_filtered
 from utils import create_ranking_dataset_vectorized
 import joblib
 import os
@@ -29,11 +29,42 @@ def set_seed(seed=42):
 feature_cloums_map = {
     '39': ['instrument','开盘', '收盘', '最高', '最低', '成交量', '成交额', '振幅', '涨跌额', '换手率', '涨跌幅','sma_5', 'sma_20', 'ema_12', 'ema_26', 'rsi', 'macd', 'macd_signal', 'volume_change', 'obv','volume_ma_5', 'volume_ma_20', 'volume_ratio', 'kdj_k', 'kdj_d', 'kdj_j', 'boll_mid', 'boll_std', 'atr_14', 'ema_60', 'volatility_10', 'volatility_20', 'return_1', 'return_5', 'return_10',  'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread'],
 
-    '158+39': ['instrument','开盘', '收盘', '最高', '最低', '成交量', '成交额', '振幅', '涨跌额', '换手率', '涨跌幅','KMID', 'KLEN', 'KMID2', 'KUP', 'KUP2', 'KLOW', 'KLOW2', 'KSFT', 'KSFT2', 'OPEN0', 'HIGH0', 'LOW0', 'VWAP0', 'ROC5', 'ROC10', 'ROC20', 'ROC30', 'ROC60', 'MA5', 'MA10', 'MA20', 'MA30', 'MA60', 'STD5', 'STD10', 'STD20', 'STD30', 'STD60', 'BETA5', 'BETA10', 'BETA20', 'BETA30', 'BETA60', 'RSQR5', 'RSQR10', 'RSQR20', 'RSQR30', 'RSQR60', 'RESI5', 'RESI10', 'RESI20', 'RESI30', 'RESI60', 'MAX5', 'MAX10', 'MAX20', 'MAX30', 'MAX60', 'MIN5', 'MIN10', 'MIN20', 'MIN30', 'MIN60', 'QTLU5', 'QTLU10', 'QTLU20', 'QTLU30', 'QTLU60', 'QTLD5', 'QTLD10', 'QTLD20', 'QTLD30', 'QTLD60', 'RANK5', 'RANK10', 'RANK20', 'RANK30', 'RANK60', 'RSV5', 'RSV10', 'RSV20', 'RSV30', 'RSV60', 'IMAX5', 'IMAX10', 'IMAX20', 'IMAX30', 'IMAX60', 'IMIN5', 'IMIN10', 'IMIN20', 'IMIN30', 'IMIN60', 'IMXD5', 'IMXD10', 'IMXD20', 'IMXD30', 'IMXD60', 'CORR5', 'CORR10', 'CORR20', 'CORR30', 'CORR60', 'CORD5', 'CORD10', 'CORD20', 'CORD30', 'CORD60', 'CNTP5', 'CNTP10', 'CNTP20', 'CNTP30', 'CNTP60', 'CNTN5', 'CNTN10', 'CNTN20', 'CNTN30', 'CNTN60', 'CNTD5', 'CNTD10', 'CNTD20', 'CNTD30', 'CNTD60', 'SUMP5', 'SUMP10', 'SUMP20', 'SUMP30', 'SUMP60', 'SUMN5', 'SUMN10', 'SUMN20', 'SUMN30', 'SUMN60', 'SUMD5', 'SUMD10', 'SUMD20', 'SUMD30', 'SUMD60', 'VMA5', 'VMA10', 'VMA20', 'VMA30', 'VMA60', 'VSTD5', 'VSTD10', 'VSTD20', 'VSTD30', 'VSTD60', 'WVMA5', 'WVMA10', 'WVMA20', 'WVMA30', 'WVMA60', 'VSUMP5', 'VSUMP10', 'VSUMP20', 'VSUMP30', 'VSUMP60', 'VSUMN5', 'VSUMN10', 'VSUMN20', 'VSUMN30', 'VSUMN60', 'VSUMD5', 'VSUMD10', 'VSUMD20', 'VSUMD30', 'VSUMD60','sma_5', 'sma_20', 'ema_12', 'ema_26', 'rsi', 'macd', 'macd_signal', 'volume_change', 'obv', 'volume_ma_5', 'volume_ma_20', 'volume_ratio', 'kdj_k', 'kdj_d', 'kdj_j', 'boll_mid', 'boll_std', 'atr_14', 'ema_60', 'volatility_10', 'volatility_20', 'return_1', 'return_5', 'return_10',  'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread']
+    '158+39': ['instrument','开盘', '收盘', '最高', '最低', '成交量', '成交额', '振幅', '涨跌额', '换手率', '涨跌幅','KMID', 'KLEN', 'KMID2', 'KUP', 'KUP2', 'KLOW', 'KLOW2', 'KSFT', 'KSFT2', 'OPEN0', 'HIGH0', 'LOW0', 'VWAP0', 'ROC5', 'ROC10', 'ROC20', 'ROC30', 'ROC60', 'MA5', 'MA10', 'MA20', 'MA30', 'MA60', 'STD5', 'STD10', 'STD20', 'STD30', 'STD60', 'BETA5', 'BETA10', 'BETA20', 'BETA30', 'BETA60', 'RSQR5', 'RSQR10', 'RSQR20', 'RSQR30', 'RSQR60', 'RESI5', 'RESI10', 'RESI20', 'RESI30', 'RESI60', 'MAX5', 'MAX10', 'MAX20', 'MAX30', 'MAX60', 'MIN5', 'MIN10', 'MIN20', 'MIN30', 'MIN60', 'QTLU5', 'QTLU10', 'QTLU20', 'QTLU30', 'QTLU60', 'QTLD5', 'QTLD10', 'QTLD20', 'QTLD30', 'QTLD60', 'RANK5', 'RANK10', 'RANK20', 'RANK30', 'RANK60', 'RSV5', 'RSV10', 'RSV20', 'RSV30', 'RSV60', 'IMAX5', 'IMAX10', 'IMAX20', 'IMAX30', 'IMAX60', 'IMIN5', 'IMIN10', 'IMIN20', 'IMIN30', 'IMIN60', 'IMXD5', 'IMXD10', 'IMXD20', 'IMXD30', 'IMXD60', 'CORR5', 'CORR10', 'CORR20', 'CORR30', 'CORR60', 'CORD5', 'CORD10', 'CORD20', 'CORD30', 'CORD60', 'CNTP5', 'CNTP10', 'CNTP20', 'CNTP30', 'CNTP60', 'CNTN5', 'CNTN10', 'CNTN20', 'CNTN30', 'CNTN60', 'CNTD5', 'CNTD10', 'CNTD20', 'CNTD30', 'CNTD60', 'SUMP5', 'SUMP10', 'SUMP20', 'SUMP30', 'SUMP60', 'SUMN5', 'SUMN10', 'SUMN20', 'SUMN30', 'SUMN60', 'SUMD5', 'SUMD10', 'SUMD20', 'SUMD30', 'SUMD60', 'VMA5', 'VMA10', 'VMA20', 'VMA30', 'VMA60', 'VSTD5', 'VSTD10', 'VSTD20', 'VSTD30', 'VSTD60', 'WVMA5', 'WVMA10', 'WVMA20', 'WVMA30', 'WVMA60', 'VSUMP5', 'VSUMP10', 'VSUMP20', 'VSUMP30', 'VSUMP60', 'VSUMN5', 'VSUMN10', 'VSUMN20', 'VSUMN30', 'VSUMN60', 'VSUMD5', 'VSUMD10', 'VSUMD20', 'VSUMD30', 'VSUMD60','sma_5', 'sma_20', 'ema_12', 'ema_26', 'rsi', 'macd', 'macd_signal', 'volume_change', 'obv', 'volume_ma_5', 'volume_ma_20', 'volume_ratio', 'kdj_k', 'kdj_d', 'kdj_j', 'boll_mid', 'boll_std', 'atr_14', 'ema_60', 'volatility_10', 'volatility_20', 'return_1', 'return_5', 'return_10',  'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread'],
+
+    'corr_filtered': ['instrument', '开盘', '成交量', '成交额', '振幅', '涨跌额', '换手率', '涨跌幅',
+                      'KMID', 'KMID2', 'KUP', 'KUP2', 'KLOW', 'KLOW2', 'KSFT', 'KSFT2',
+                      'HIGH0', 'LOW0', 'VWAP0', 'ROC5', 'ROC10', 'ROC20', 'ROC30', 'ROC60',
+                      'MA5', 'MA10', 'MA20', 'MA30', 'STD5', 'STD10', 'STD20', 'STD30', 'STD60',
+                      'BETA5', 'BETA10', 'BETA20', 'BETA30', 'BETA60', 'RSQR5', 'RSQR10', 'RSQR20', 'RSQR30', 'RSQR60',
+                      'RESI5', 'RESI10', 'RESI20', 'RESI30', 'RESI60',
+                      'RANK5', 'RANK10', 'RANK20', 'RANK30', 'RANK60',
+                      'RSV5', 'RSV10', 'RSV20', 'RSV30', 'RSV60',
+                      'IMAX5', 'IMAX10', 'IMAX20', 'IMAX30', 'IMAX60',
+                      'IMIN5', 'IMIN10', 'IMIN20', 'IMIN30', 'IMIN60',
+                      'IMXD5', 'IMXD10', 'IMXD20', 'IMXD30', 'IMXD60',
+                      'CORR5', 'CORR10', 'CORR20', 'CORR30', 'CORR60',
+                      'CORD5', 'CORD10', 'CORD20', 'CORD30', 'CORD60',
+                      'CNTP5', 'CNTP10', 'CNTP20', 'CNTP30', 'CNTP60',
+                      'CNTN5', 'CNTN10', 'CNTN20', 'CNTN30', 'CNTN60',
+                      'CNTD10', 'CNTD20', 'CNTD30', 'CNTD60',
+                      'SUMP5', 'SUMP10', 'SUMP20', 'SUMP30', 'SUMP60',
+                      'SUMN5', 'SUMN10', 'SUMN20', 'SUMN30',
+                      'SUMD10', 'SUMD20', 'SUMD30', 'SUMD60',
+                      'VMA5', 'VMA10', 'VMA20', 'VMA30', 'VMA60',
+                      'VSTD5', 'VSTD10', 'VSTD20', 'VSTD30', 'VSTD60',
+                      'WVMA5', 'WVMA10', 'WVMA20', 'WVMA30', 'WVMA60',
+                      'VSUMP5', 'VSUMP10', 'VSUMP20', 'VSUMP30', 'VSUMP60',
+                      'VSUMN5', 'VSUMN10', 'VSUMN20', 'VSUMN30',
+                      'VSUMD10', 'VSUMD20', 'VSUMD30', 'VSUMD60',
+                      'rsi', 'macd', 'volume_change', 'obv', 'volume_ma_5', 'volume_ma_20', 'volume_ratio',
+                      'kdj_k', 'kdj_d', 'kdj_j', 'boll_std', 'atr_14',
+                      'volatility_10', 'volatility_20', 'return_1', 'return_5', 'return_10',
+                      'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread']
 }
 feature_engineer_func_map = {
     '39': engineer_features_39,
-    '158+39': engineer_features_158plus39
+    '158+39': engineer_features_158plus39,
+    'corr_filtered': engineer_features_corr_filtered
 }
 
 
@@ -42,14 +73,16 @@ def _build_label_and_clean(processed, drop_small_open=True):
     processed['open_t1'] = processed.groupby('股票代码')['开盘'].shift(-1)
     processed['open_t5'] = processed.groupby('股票代码')['开盘'].shift(-5)
 
-    # 过滤无效开盘价，避免收益率极端爆炸
     if drop_small_open:
         processed = processed[processed['open_t1'] > 1e-4]
 
-    processed['label'] = (processed['open_t5'] - processed['open_t1']) / (processed['open_t1'] + 1e-12)
+    processed['abs_return'] = (processed['open_t5'] - processed['open_t1']) / (processed['open_t1'] + 1e-12)
+    processed['market_return'] = processed.groupby('日期')['abs_return'].transform('mean')
+    processed['excess_return'] = processed['abs_return'] - processed['market_return']
+    processed['label'] = processed.groupby('日期')['excess_return'].rank(method='first', ascending=False)
+
     processed = processed.dropna(subset=['label'])
 
-    # 保留abs_return用于评估，删除中间变量
     processed.drop(columns=['open_t1', 'open_t5', 'market_return', 'excess_return'], inplace=True)
     return processed
 
@@ -110,35 +143,32 @@ class WeightedRankingLoss(nn.Module):
         self.base_weight = base_weight
 
     def listwise_loss(self, y_pred, y_true, weights):
-        """加权的Listwise损失 (KL散度 + Cross Entropy)"""
+        """加权的Listwise损失 (基于排名标签)"""
         
         pred_probs = F.softmax(y_pred / self.temperature, dim=1)
-        target_probs = F.softmax(y_true / self.temperature, dim=1)
+        
+        rank_scores = 1.0 / (y_true + 1e-6)
+        target_probs = F.softmax(rank_scores / self.temperature, dim=1)
 
-        # 加权 Cross Entropy（原实现未使用 weights）
         weighted_ce = -(target_probs * torch.log(pred_probs + 1e-12) * weights)
         ce_loss = (weighted_ce.sum(dim=1) / (weights.sum(dim=1) + 1e-12)).mean()
         
         return ce_loss
 
     def pairwise_loss(self, y_pred, y_true, weights):
-        """加权的Pairwise损失"""
+        """加权的Pairwise损失（只比较排名方向）"""
         batch_size, num_items = y_pred.size()
         
         pred_diff = y_pred.unsqueeze(2) - y_pred.unsqueeze(1)
         true_diff = y_true.unsqueeze(2) - y_true.unsqueeze(1)
+        true_diff_sign = torch.sign(true_diff)
         
-        # 只考虑真实标签不同的项目对
-        mask = (true_diff != 0).float()
+        mask = (true_diff_sign != 0).float()
         
-        # 创建权重矩阵
-        # 如果一对(i, j)中，i或j是关键样本，则权重更高
         weight_matrix = weights.unsqueeze(2) + weights.unsqueeze(1)
-        # weight_matrix = torch.where(weight_matrix > 2.0, self.weight_factor, 1.0)
         
-        pairwise_loss = torch.sigmoid(-pred_diff * torch.sign(true_diff))
+        pairwise_loss = torch.sigmoid(-pred_diff * true_diff_sign)
         
-        # 应用mask和权重
         weighted_loss = pairwise_loss * mask * weight_matrix
         
         num_pairs = mask.sum(dim=[1, 2]).clamp(min=1)
@@ -172,15 +202,12 @@ class WeightedRankingLoss(nn.Module):
         return total_loss
 
 def calculate_ranking_metrics(y_pred, y_true, masks, k=5):
-    """计算新的评估指标：Top 5 收益之和，以及与理论最高值和随机值的比值"""
+    """计算与评分脚本一致的评估指标：Top 5等权收益率"""
     batch_size = y_pred.size(0)
     
-    # Metrics accumulators
     pred_return_sum_list = []
     max_return_sum_list = []
     random_return_sum_list = []
-    ratio_pred_list = []
-    ratio_random_list = []
     final_score_list = []
     
     for i in range(batch_size):
@@ -191,45 +218,33 @@ def calculate_ranking_metrics(y_pred, y_true, masks, k=5):
             continue
             
         valid_pred = y_pred[i][valid_indices]
-        valid_true = y_true[i][valid_indices] # This is the 5-day return
+        valid_true = y_true[i][valid_indices]
         
-        # 1. Predicted Top 5
         _, pred_indices = torch.topk(valid_pred, k)
         pred_top_returns = valid_true[pred_indices]
         pred_return_sum = pred_top_returns.sum().item()
         
-        # 2. True Top 5 (Theoretical Max)
         _, true_indices = torch.topk(valid_true, k)
         true_top_returns = valid_true[true_indices]
         max_return_sum = true_top_returns.sum().item()
         
-        # 3. Random 5 (Expected Value)
-        # Expected sum = 5 * mean(all valid returns)
         random_return_sum = k * valid_true.mean().item()
         
-        # 计算每个样本的比例与稳定化 final_score
-        ratio_pred = pred_return_sum / (max_return_sum + 1e-12) if abs(max_return_sum) > 1e-9 else 0.0
-        ratio_random = random_return_sum / (max_return_sum + 1e-12) if abs(max_return_sum) > 1e-9 else 0.0
         denominator = max_return_sum - random_return_sum
         final_score = (pred_return_sum - random_return_sum) / (denominator + 1e-12) if abs(denominator) > 1e-6 else 0.0
         
         pred_return_sum_list.append(pred_return_sum)
         max_return_sum_list.append(max_return_sum)
         random_return_sum_list.append(random_return_sum)
-        ratio_pred_list.append(ratio_pred)
-        ratio_random_list.append(ratio_random)
         final_score_list.append(final_score)
         
     metrics = {
         'pred_return_sum': np.mean(pred_return_sum_list) if pred_return_sum_list else 0.0,
         'max_return_sum': np.mean(max_return_sum_list) if max_return_sum_list else 0.0,
         'random_return_sum': np.mean(random_return_sum_list) if random_return_sum_list else 0.0,
+        'top5_return': np.mean(pred_return_sum_list) / k if pred_return_sum_list else 0.0,
+        'final_score': np.mean(final_score_list) if final_score_list else 0.0,
     }
-    
-    # 比值用逐样本均值，降低极端日影响
-    metrics['ratio_pred'] = np.mean(ratio_pred_list) if ratio_pred_list else 0.0
-    metrics['ratio_random'] = np.mean(ratio_random_list) if ratio_random_list else 0.0
-    metrics['final_score'] = np.mean(final_score_list) if final_score_list else 0.0
     
     return metrics
 
