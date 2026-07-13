@@ -9,7 +9,7 @@ config = {
     'dim_feedforward': 512, # 前馈网络维度
     'batch_size': 4,        # 排序任务batch_size可以小一些，因为每个batch包含更多股票
     'num_epochs': 50,       # 排序任务可能需要更多epochs
-    'learning_rate': 1e-5,  # 恢复基线学习率
+    'learning_rate': 2e-5,  # 提高学习率，特征减少后需要更快收敛
     'dropout': 0.1,
     'feature_num': feature_num,
     'max_grad_norm': 5.0,
@@ -20,4 +20,6 @@ config = {
 
     'output_dir': f'./model/{sequence_length}_{feature_num}',
     'data_path': './data',
+    
+    'rolling_validation': False,  # 是否启用滚动窗口验证
 }

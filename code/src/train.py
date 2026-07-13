@@ -79,7 +79,7 @@ def _build_label_and_clean(processed, drop_small_open=True):
     processed['abs_return'] = (processed['open_t5'] - processed['open_t1']) / (processed['open_t1'] + 1e-12)
     processed['market_return'] = processed.groupby('日期')['abs_return'].transform('mean')
     processed['excess_return'] = processed['abs_return'] - processed['market_return']
-    processed['label'] = processed.groupby('日期')['excess_return'].rank(method='first', ascending=False)
+    processed['label'] = processed.groupby('日期')['excess_return'].rank(pct=True, ascending=False) * 100
 
     processed = processed.dropna(subset=['label'])
 
@@ -143,11 +143,11 @@ class WeightedRankingLoss(nn.Module):
         self.base_weight = base_weight
 
     def listwise_loss(self, y_pred, y_true, weights):
-        """加权的Listwise损失 (基于排名标签)"""
+        """加权的Listwise损失 (基于百分位等级标签)"""
         
         pred_probs = F.softmax(y_pred / self.temperature, dim=1)
         
-        rank_scores = 1.0 / (y_true + 1e-6)
+        rank_scores = 100.0 - y_true
         target_probs = F.softmax(rank_scores / self.temperature, dim=1)
 
         weighted_ce = -(target_probs * torch.log(pred_probs + 1e-12) * weights)
@@ -562,17 +562,158 @@ def split_train_val_by_last_month(df, sequence_length):
 
     return train_df, val_df, val_start
 
-# 主程序
-def main():
-    set_seed(config.get('seed', 42))
-    output_dir = config['output_dir']
-    os.makedirs(output_dir,exist_ok=True)
-    # 保存在output_dir中保存当前的配置文件，以便复现
-    data_path = config['data_path']
-    with open(os.path.join(output_dir, 'config.json'), 'w') as f:
-        json.dump(config, f, indent=4, ensure_ascii=False)
-    is_train = True
-    writer = SummaryWriter(log_dir=os.path.join(output_dir, 'log')) if is_train else None
+
+def generate_rolling_windows(df, sequence_length, num_windows=50, val_days=5, gap_days=5):
+    """生成滚动窗口验证的日期划分。
+    
+    参数:
+        df: 原始数据
+        sequence_length: 序列长度
+        num_windows: 窗口数量
+        val_days: 验证窗口长度（交易日）
+        gap_days: 训练集和验证集之间的空窗期（交易日）
+    
+    返回:
+        windows: 列表，每个元素包含(train_end, gap_end, val_end)
+    """
+    df = df.copy()
+    df['日期'] = pd.to_datetime(df['日期'])
+    unique_dates = sorted(df['日期'].unique())
+    
+    min_train_days = sequence_length + gap_days + val_days
+    if len(unique_dates) < min_train_days:
+        raise ValueError(f"数据不足，需要至少{min_train_days}个交易日")
+    
+    windows = []
+    step = (len(unique_dates) - min_train_days) // (num_windows - 1)
+    
+    for i in range(num_windows):
+        val_end_idx = len(unique_dates) - (num_windows - 1 - i) * step - 1
+        val_end_idx = min(val_end_idx, len(unique_dates) - 1)
+        
+        val_end = unique_dates[val_end_idx]
+        
+        val_start_idx = max(0, val_end_idx - val_days + 1)
+        val_start = unique_dates[val_start_idx]
+        
+        gap_end_idx = max(0, val_start_idx - 1)
+        gap_end = unique_dates[gap_end_idx] if gap_end_idx >= 0 else val_start - pd.Timedelta(days=gap_days)
+        
+        train_end_idx = max(0, gap_end_idx - gap_days)
+        train_end = unique_dates[train_end_idx] if train_end_idx >= 0 else gap_end - pd.Timedelta(days=gap_days)
+        
+        windows.append({
+            'window_idx': i + 1,
+            'train_end': train_end,
+            'gap_end': gap_end,
+            'val_start': val_start,
+            'val_end': val_end
+        })
+    
+    return windows
+
+def train_single_window(full_df, stockid2idx, num_stocks, window_info, config, device, output_dir):
+    """在单个窗口上训练和评估模型。"""
+    train_end = window_info['train_end']
+    val_start = window_info['val_start']
+    val_end = window_info['val_end']
+    window_idx = window_info['window_idx']
+    
+    print(f"\n{'='*60}")
+    print(f"滚动窗口验证 - 窗口 {window_idx}")
+    print(f"训练集结束: {train_end.date()}")
+    print(f"验证集范围: {val_start.date()} ~ {val_end.date()}")
+    print(f"{'='*60}")
+    
+    full_df_dt = full_df.copy()
+    full_df_dt['日期'] = pd.to_datetime(full_df_dt['日期'])
+    
+    train_df_raw = full_df_dt[full_df_dt['日期'] <= train_end].copy()
+    val_df_raw = full_df_dt[(full_df_dt['日期'] >= val_start) & (full_df_dt['日期'] <= val_end)].copy()
+    
+    val_context_start = val_start - pd.tseries.offsets.BDay(config['sequence_length'] - 1)
+    val_df_raw_full = full_df_dt[full_df_dt['日期'] >= val_context_start].copy()
+    
+    train_df_raw['日期'] = train_df_raw['日期'].dt.strftime('%Y-%m-%d')
+    val_df_raw_full['日期'] = val_df_raw_full['日期'].dt.strftime('%Y-%m-%d')
+    
+    train_data, features = preprocess_data(train_df_raw, is_train=True, stockid2idx=stockid2idx)
+    val_data, _ = preprocess_val_data(val_df_raw_full, stockid2idx=stockid2idx)
+    
+    scaler = StandardScaler()
+    train_data[features] = train_data[features].replace([np.inf, -np.inf], np.nan)
+    val_data[features] = val_data[features].replace([np.inf, -np.inf], np.nan)
+    train_data = train_data.dropna(subset=features)
+    val_data = val_data.dropna(subset=features)
+    train_data[features] = scaler.fit_transform(train_data[features])
+    val_data[features] = scaler.transform(val_data[features])
+    
+    train_sequences, train_targets, train_relevance, train_stock_indices = create_ranking_dataset_vectorized(
+        train_data, features, config['sequence_length']
+    )
+    val_sequences, val_targets, val_relevance, val_stock_indices = create_ranking_dataset_vectorized(
+        val_data, features, config['sequence_length'],
+        min_window_end_date=val_start.strftime('%Y-%m-%d')
+    )
+    
+    if len(train_sequences) == 0 or len(val_sequences) == 0:
+        print(f"窗口 {window_idx}: 数据不足，跳过")
+        return None
+    
+    train_dataset = RankingDataset(train_sequences, train_targets, train_relevance, train_stock_indices)
+    val_dataset = RankingDataset(val_sequences, val_targets, val_relevance, val_stock_indices)
+    
+    train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True, 
+                              collate_fn=collate_fn, num_workers=0, pin_memory=False)
+    val_loader = DataLoader(val_dataset, batch_size=config['batch_size'], shuffle=False, 
+                            collate_fn=collate_fn, num_workers=0, pin_memory=False)
+    
+    model = StockTransformer(input_dim=len(features), config=config, num_stocks=num_stocks)
+    model.to(device)
+    
+    criterion = WeightedRankingLoss(
+        k=5, temperature=1.0,
+        weight_factor=config['top5_weight'],
+        pairwise_weight=config['pairwise_weight'],
+        base_weight=config.get('base_weight', 1.0)
+    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.2, 
+                                                  total_iters=config['num_epochs'])
+    
+    best_score = -float('inf')
+    best_metrics = None
+    
+    for epoch in range(config['num_epochs']):
+        train_loss, train_metrics = train_ranking_model(model, train_loader, criterion, optimizer, device, epoch, None)
+        
+        eval_loss, eval_metrics = evaluate_ranking_model(model, val_loader, criterion, device, None, epoch)
+        
+        scheduler.step()
+        
+        current_final_score = eval_metrics.get('final_score', 0.0)
+        if current_final_score > best_score:
+            best_score = current_final_score
+            best_metrics = eval_metrics
+    
+    print(f"窗口 {window_idx} 完成 - 最佳 final_score: {best_score:.4f}")
+    
+    return {
+        'window_idx': window_idx,
+        'train_end': train_end.strftime('%Y-%m-%d'),
+        'val_start': val_start.strftime('%Y-%m-%d'),
+        'val_end': val_end.strftime('%Y-%m-%d'),
+        'final_score': best_score,
+        'top5_return': best_metrics.get('top5_return', 0.0) if best_metrics else 0.0
+    }
+
+
+def run_rolling_validation(full_df, config, output_dir):
+    """运行滚动窗口验证。"""
+    print("\n" + "="*60)
+    print("滚动窗口验证")
+    print("="*60)
+    
     if torch.cuda.is_available():
         device = torch.device('cuda')
     elif torch.backends.mps.is_available():
@@ -580,137 +721,186 @@ def main():
     else:
         device = torch.device('cpu')
     
-    # 1. 数据加载
-    data_file = os.path.join(data_path, 'train.csv')
-    full_df = pd.read_csv(data_file)
-    train_df, val_df, val_start = split_train_val_by_last_month(full_df, config['sequence_length'])
-    
-    # 获取所有股票ID，建立映射
     all_stock_ids = full_df['股票代码'].unique()
     stockid2idx = {sid: idx for idx, sid in enumerate(sorted(all_stock_ids))}
     num_stocks = len(stockid2idx)
     
-    # 2. 特征工程与预处理
-    train_data, features = preprocess_data(train_df, is_train=True, stockid2idx=stockid2idx)
-    val_data, _ = preprocess_val_data(val_df, stockid2idx=stockid2idx)
+    windows = generate_rolling_windows(full_df, config['sequence_length'], 
+                                       num_windows=50, val_days=5, gap_days=5)
     
-    # 3. 标准化
-    scaler = StandardScaler()
+    print(f"生成 {len(windows)} 个滚动窗口")
+    
+    results = []
+    for window_info in windows:
+        result = train_single_window(full_df, stockid2idx, num_stocks, window_info, config, device, output_dir)
+        if result is not None:
+            results.append(result)
+    
+    if len(results) == 0:
+        print("没有有效的窗口结果")
+        return None
+    
+    results_df = pd.DataFrame(results)
+    
+    avg_final_score = results_df['final_score'].mean()
+    avg_top5_return = results_df['top5_return'].mean()
+    positive_count = (results_df['top5_return'] > 0).sum()
+    positive_ratio = positive_count / len(results_df)
+    
+    max_consecutive_loss = 0
+    current_consecutive = 0
+    for _, row in results_df.iterrows():
+        if row['top5_return'] <= 0:
+            current_consecutive += 1
+            max_consecutive_loss = max(max_consecutive_loss, current_consecutive)
+        else:
+            current_consecutive = 0
+    
+    print("\n" + "="*60)
+    print("滚动窗口验证结果汇总")
+    print("="*60)
+    print(f"窗口数量: {len(results_df)}")
+    print(f"平均 final_score: {avg_final_score:.4f}")
+    print(f"平均 top5_return: {avg_top5_return:.4f}")
+    print(f"正收益窗口比例: {positive_ratio:.2%} ({positive_count}/{len(results_df)})")
+    print(f"最大连续亏损窗口数: {max_consecutive_loss}")
+    print(f"最优窗口 final_score: {results_df['final_score'].max():.4f}")
+    print(f"最差窗口 final_score: {results_df['final_score'].min():.4f}")
+    
+    results_df.to_csv(os.path.join(output_dir, 'rolling_validation_results.csv'), 
+                      index=False, encoding='utf-8-sig')
+    
+    with open(os.path.join(output_dir, 'rolling_validation_summary.txt'), 'w') as f:
+        f.write("滚动窗口验证结果汇总\n")
+        f.write("="*60 + "\n")
+        f.write(f"窗口数量: {len(results_df)}\n")
+        f.write(f"平均 final_score: {avg_final_score:.4f}\n")
+        f.write(f"平均 top5_return: {avg_top5_return:.4f}\n")
+        f.write(f"正收益窗口比例: {positive_ratio:.2%} ({positive_count}/{len(results_df)})\n")
+        f.write(f"最大连续亏损窗口数: {max_consecutive_loss}\n")
+        f.write(f"最优窗口 final_score: {results_df['final_score'].max():.4f}\n")
+        f.write(f"最差窗口 final_score: {results_df['final_score'].min():.4f}\n")
+    
+    return avg_final_score
 
-    train_data[features] = train_data[features].replace([np.inf, -np.inf], np.nan)
-    val_data[features] = val_data[features].replace([np.inf, -np.inf], np.nan)
-    # 丢弃nan数据
-    train_data = train_data.dropna(subset=features)
-    val_data = val_data.dropna(subset=features)
-    # 然后再缩放
-    train_data[features] = scaler.fit_transform(train_data[features])
-    val_data[features] = scaler.transform(val_data[features])
-    joblib.dump(scaler, os.path.join(output_dir, 'scaler.pkl'))
 
+# 主程序
+def main():
+    set_seed(config.get('seed', 42))
+    output_dir = config['output_dir']
+    os.makedirs(output_dir, exist_ok=True)
     
-    # 4. 创建排序数据集
-    train_sequences, train_targets, train_relevance, train_stock_indices = create_ranking_dataset_vectorized(
-        train_data,
-        features,
-        config['sequence_length'],
-        ranking_data_path=config.get('train_ranking_data_path')
-    )
-    val_sequences, val_targets, val_relevance, val_stock_indices = create_ranking_dataset_vectorized(
-        val_data,
-        features,
-        config['sequence_length'],
-        ranking_data_path=config.get('val_ranking_data_path'),
-        min_window_end_date=val_start.strftime('%Y-%m-%d')
-    )
-
-    print(f"训练集样本数: {len(train_sequences)}")
-    print(f"验证集样本数: {len(val_sequences)}")
+    data_path = config['data_path']
+    with open(os.path.join(output_dir, 'config.json'), 'w') as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
     
-    # 5. 创建排序数据集和数据加载器
-    train_dataset = RankingDataset(train_sequences, train_targets, train_relevance, train_stock_indices)
-    val_dataset = RankingDataset(val_sequences, val_targets, val_relevance, val_stock_indices)
+    data_file = os.path.join(data_path, 'train.csv')
+    full_df = pd.read_csv(data_file)
     
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=config['batch_size'], 
-        shuffle=True, 
-        collate_fn=collate_fn,
-        num_workers=0,  # 减少worker数量避免内存问题
-        pin_memory=False
-    )
+    rolling_mode = config.get('rolling_validation', False)
     
-    val_loader = DataLoader(
-        val_dataset, 
-        batch_size=config['batch_size'], 
-        shuffle=False, 
-        collate_fn=collate_fn,
-        num_workers=0,
-        pin_memory=False
-    )
-    
-    # 6. 模型初始化
-    model = StockTransformer(input_dim=len(features), config=config, num_stocks=num_stocks)
-    model.to(device)
-    print(f"模型参数量: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
-    
-    # 7. 损失函数和优化器
-    criterion = WeightedRankingLoss(
-        k=5,
-        temperature=1.0,
-        weight_factor=config['top5_weight'],
-        pairwise_weight=config['pairwise_weight'],
-        base_weight=config.get('base_weight', 1.0)
-    )  # 使用加权排序损失
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.2, total_iters=config['num_epochs'])
-    
-    # 8. 排序模型训练
-    if is_train:
-        best_score = -float('inf')
-        best_epoch = -1
+    if rolling_mode:
+        best_score = run_rolling_validation(full_df, config, output_dir)
+    else:
+        is_train = True
+        writer = SummaryWriter(log_dir=os.path.join(output_dir, 'log')) if is_train else None
+        if torch.cuda.is_available():
+            device = torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            device = torch.device('mps')
+        else:
+            device = torch.device('cpu')
         
-        for epoch in range(config['num_epochs']):
-            print(f"\n=== Epoch {epoch+1}/{config['num_epochs']} ===")
+        train_df, val_df, val_start = split_train_val_by_last_month(full_df, config['sequence_length'])
+        
+        all_stock_ids = full_df['股票代码'].unique()
+        stockid2idx = {sid: idx for idx, sid in enumerate(sorted(all_stock_ids))}
+        num_stocks = len(stockid2idx)
+        
+        train_data, features = preprocess_data(train_df, is_train=True, stockid2idx=stockid2idx)
+        val_data, _ = preprocess_val_data(val_df, stockid2idx=stockid2idx)
+        
+        scaler = StandardScaler()
+        train_data[features] = train_data[features].replace([np.inf, -np.inf], np.nan)
+        val_data[features] = val_data[features].replace([np.inf, -np.inf], np.nan)
+        train_data = train_data.dropna(subset=features)
+        val_data = val_data.dropna(subset=features)
+        train_data[features] = scaler.fit_transform(train_data[features])
+        val_data[features] = scaler.transform(val_data[features])
+        joblib.dump(scaler, os.path.join(output_dir, 'scaler.pkl'))
+
+        train_sequences, train_targets, train_relevance, train_stock_indices = create_ranking_dataset_vectorized(
+            train_data, features, config['sequence_length'],
+            ranking_data_path=config.get('train_ranking_data_path')
+        )
+        val_sequences, val_targets, val_relevance, val_stock_indices = create_ranking_dataset_vectorized(
+            val_data, features, config['sequence_length'],
+            ranking_data_path=config.get('val_ranking_data_path'),
+            min_window_end_date=val_start.strftime('%Y-%m-%d')
+        )
+
+        print(f"训练集样本数: {len(train_sequences)}")
+        print(f"验证集样本数: {len(val_sequences)}")
+        
+        train_dataset = RankingDataset(train_sequences, train_targets, train_relevance, train_stock_indices)
+        val_dataset = RankingDataset(val_sequences, val_targets, val_relevance, val_stock_indices)
+        
+        train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True, 
+                                  collate_fn=collate_fn, num_workers=0, pin_memory=False)
+        val_loader = DataLoader(val_dataset, batch_size=config['batch_size'], shuffle=False, 
+                                collate_fn=collate_fn, num_workers=0, pin_memory=False)
+        
+        model = StockTransformer(input_dim=len(features), config=config, num_stocks=num_stocks)
+        model.to(device)
+        print(f"模型参数量: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
+        
+        criterion = WeightedRankingLoss(
+            k=5, temperature=1.0,
+            weight_factor=config['top5_weight'],
+            pairwise_weight=config['pairwise_weight'],
+            base_weight=config.get('base_weight', 1.0)
+        )
+        optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
+        scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.2, 
+                                                      total_iters=config['num_epochs'])
+        
+        if is_train:
+            best_score = -float('inf')
+            best_epoch = -1
             
-            # 训练
-            train_loss, train_metrics = train_ranking_model(
-                model, train_loader, criterion, optimizer, device, epoch, writer
-            )
-            
-            print(f"Train Loss: {train_loss:.4f}")
-            for k, v in train_metrics.items():
-                print(f"Train {k}: {v:.4f}")
-            
-            # 验证
-            eval_loss, eval_metrics = evaluate_ranking_model(
-                model, val_loader, criterion, device, writer, epoch
-            )
-            
-            print(f"Eval Loss: {eval_loss:.4f}")
-            for k, v in eval_metrics.items():
-                print(f"Eval {k}: {v:.4f}")
-            
-            # 学习率调度
-            scheduler.step()
+            for epoch in range(config['num_epochs']):
+                print(f"\n=== Epoch {epoch+1}/{config['num_epochs']} ===")
+                
+                train_loss, train_metrics = train_ranking_model(model, train_loader, criterion, optimizer, device, epoch, writer)
+                
+                print(f"Train Loss: {train_loss:.4f}")
+                for k, v in train_metrics.items():
+                    print(f"Train {k}: {v:.4f}")
+                
+                eval_loss, eval_metrics = evaluate_ranking_model(model, val_loader, criterion, device, writer, epoch)
+                
+                print(f"Eval Loss: {eval_loss:.4f}")
+                for k, v in eval_metrics.items():
+                    print(f"Eval {k}: {v:.4f}")
+                
+                scheduler.step()
+                if writer:
+                    writer.add_scalar('train/learning_rate', scheduler.get_last_lr()[0], global_step=epoch)
+                
+                current_final_score = eval_metrics.get('final_score', 0.0)
+                if current_final_score > best_score:
+                    best_score = current_final_score
+                    best_epoch = epoch + 1
+                    torch.save(model.state_dict(), os.path.join(output_dir, 'best_model.pth'))
+                    print(f"保存最佳模型 - final score: {best_score:.4f}")
+            print(f"\n训练完成！最佳 epoch: {best_epoch}, 最佳 final score: {best_score:.4f}")
+            with open(os.path.join(output_dir, 'final_score.txt'), 'w') as f:
+                f.write(f"Best epoch: {best_epoch}\nBest final_score: {best_score:.6f}\n")
+
             if writer:
-                writer.add_scalar('train/learning_rate', scheduler.get_last_lr()[0], global_step=epoch)
-            
+                writer.close()
 
-            # 保存最佳模型（基于final score）
-            current_final_score = eval_metrics.get('final_score', 0.0)
-            if current_final_score > best_score:
-                best_score = current_final_score
-                best_epoch = epoch + 1
-                torch.save(model.state_dict(), os.path.join(output_dir, 'best_model.pth'))
-                print(f"保存最佳模型 - final score: {best_score:.4f}")
-        print(f"\n训练完成！最佳 epoch: {best_epoch}, 最佳 final score: {best_score:.4f}")
-        with open(os.path.join(output_dir, 'final_score.txt'), 'w') as f:
-            f.write(f"Best epoch: {best_epoch}\\nBest final_score: {best_score:.6f}\\n")
-
-        if writer:
-            writer.close()
-
-        return best_score
+    return best_score
 
 if __name__ == "__main__":
     # 多进程保护
