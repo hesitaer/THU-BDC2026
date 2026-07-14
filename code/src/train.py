@@ -129,22 +129,18 @@ def preprocess_val_data(df, stockid2idx=None):
     return _preprocess_common(df, stockid2idx, desc="验证集特征工程", drop_small_open=True)
 
 
-# 加权的排序损失函数
 class WeightedRankingLoss(nn.Module):
-    """
-    组合的加权排序损失函数，着重强调top-k的样本。
-    """
-    def __init__(self, temperature=1.0, k=5, weight_factor=2.0, pairwise_weight=1, base_weight=1.0):
+    def __init__(self, temperature=1.0, k=5, weight_factor=3.0, pairwise_weight=1, base_weight=1.0, reg_weight=0.1):
         super(WeightedRankingLoss, self).__init__()
         self.temperature = temperature
         self.k = k
         self.weight_factor = weight_factor
         self.pairwise_weight = pairwise_weight
         self.base_weight = base_weight
+        self.reg_weight = reg_weight
+        self.mse_loss = nn.MSELoss(reduction='none')
 
     def listwise_loss(self, y_pred, y_true, weights):
-        """加权的Listwise损失 (基于百分位等级标签)"""
-        
         pred_probs = F.softmax(y_pred / self.temperature, dim=1)
         
         rank_scores = 100.0 - y_true
@@ -156,7 +152,6 @@ class WeightedRankingLoss(nn.Module):
         return ce_loss
 
     def pairwise_loss(self, y_pred, y_true, weights):
-        """加权的Pairwise损失（只比较排名方向）"""
         batch_size, num_items = y_pred.size()
         
         pred_diff = y_pred.unsqueeze(2) - y_pred.unsqueeze(1)
@@ -175,29 +170,28 @@ class WeightedRankingLoss(nn.Module):
         loss = (weighted_loss.sum(dim=[1, 2]) / num_pairs).mean()
         
         return loss
+
+    def regression_loss(self, y_pred, y_true, weights):
+        mse = self.mse_loss(y_pred, y_true)
+        weighted_mse = (mse * weights).mean()
+        return weighted_mse
         
     def forward(self, y_pred, y_true):
-        """
-        y_pred: [batch, num_items]
-        y_true: [batch, num_items] (真实涨跌幅)
-        """
         batch_size, num_items = y_true.size()
         k = min(self.k, num_items)
 
-        # 1. 识别 top-k 的样本
         _, top_indices = torch.topk(y_true, k, dim=1)
         
-        # 2. 创建权重向量
         weights = torch.full_like(y_true, fill_value=self.base_weight)
         for i in range(batch_size):
             weights[i, top_indices[i]] = self.weight_factor
             
-        # 3. 计算加权损失
         listwise = self.listwise_loss(y_pred, y_true, weights)
         pairwise = self.pairwise_loss(y_pred, y_true, weights)
+        reg_loss = self.regression_loss(y_pred, y_true, weights)
         
-        # 组合两种损失
-        total_loss = listwise + self.pairwise_weight * pairwise
+        # 组合损失
+        total_loss = listwise + self.pairwise_weight * pairwise + self.reg_weight * reg_loss
         
         return total_loss
 
@@ -675,11 +669,11 @@ def train_single_window(full_df, stockid2idx, num_stocks, window_info, config, d
         k=5, temperature=1.0,
         weight_factor=config['top5_weight'],
         pairwise_weight=config['pairwise_weight'],
-        base_weight=config.get('base_weight', 1.0)
+        base_weight=config.get('base_weight', 1.0),
+        reg_weight=config.get('reg_weight', 0.1)
     )
     optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.2, 
-                                                  total_iters=config['num_epochs'])
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config['num_epochs'])
     
     best_score = -float('inf')
     best_metrics = None
@@ -858,11 +852,11 @@ def main():
             k=5, temperature=1.0,
             weight_factor=config['top5_weight'],
             pairwise_weight=config['pairwise_weight'],
-            base_weight=config.get('base_weight', 1.0)
+            base_weight=config.get('base_weight', 1.0),
+            reg_weight=config.get('reg_weight', 0.1)
         )
         optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
-        scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.2, 
-                                                      total_iters=config['num_epochs'])
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config['num_epochs'])
         
         if is_train:
             best_score = -float('inf')
@@ -893,6 +887,11 @@ def main():
                     best_epoch = epoch + 1
                     torch.save(model.state_dict(), os.path.join(output_dir, 'best_model.pth'))
                     print(f"保存最佳模型 - final score: {best_score:.4f}")
+                
+                # 只保存验证得分大于0的epoch用于集成
+                if current_final_score > 0:
+                    torch.save(model.state_dict(), os.path.join(output_dir, f'model_epoch_{epoch+1}.pth'))
+                    print(f"保存epoch {epoch+1}模型用于集成 (score: {current_final_score:.4f})")
             print(f"\n训练完成！最佳 epoch: {best_epoch}, 最佳 final score: {best_score:.4f}")
             with open(os.path.join(output_dir, 'final_score.txt'), 'w') as f:
                 f.write(f"Best epoch: {best_epoch}\nBest final_score: {best_score:.6f}\n")
