@@ -177,14 +177,26 @@ def main():
 
 	order = np.argsort(scores)[::-1]
 	ranked_stock_ids = [sequence_stock_ids[i] for i in order]
+	ranked_scores = scores[order]
 
-	# 仅输出前5，权重固定 0.2
 	if len(ranked_stock_ids) < 5:
 		raise ValueError(f'可预测股票不足5只，当前仅有 {len(ranked_stock_ids)} 只')
+
 	top5 = ranked_stock_ids[:5]
+	top5_scores = ranked_scores[:5]
+
+	top5_scores = top5_scores - np.min(top5_scores) + 1e-12
+	weights = np.exp(top5_scores) / np.sum(np.exp(top5_scores))
+
+	min_weight = 0.02
+	max_weight = 0.3
+	weights = np.maximum(weights, min_weight)
+	weights = np.minimum(weights, max_weight)
+	weights = weights / np.sum(weights)
+
 	output_df = pd.DataFrame({
 		'stock_id': top5,
-		'weight': [0.2] * len(top5),
+		'weight': weights,
 	})
 	output_df.to_csv(output_path, index=False)
 
