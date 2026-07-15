@@ -16,6 +16,12 @@ import os
 import json
 import multiprocessing as mp
 import random
+
+def init_worker(worker_seed):
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
+
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -103,7 +109,8 @@ def _preprocess_common(df, stockid2idx, desc, drop_small_open=True):
         raise ValueError(f"{desc}输入为空，无法继续")
 
     num_processes = min(10, mp.cpu_count())
-    with mp.Pool(processes=num_processes) as pool:
+    seed = config.get('seed', 42)
+    with mp.Pool(processes=num_processes, initializer=init_worker, initargs=(seed,)) as pool:
         processed_list = list(tqdm(pool.imap(feature_engineer, groups), total=len(groups), desc=desc))
 
     processed = pd.concat(processed_list).reset_index(drop=True)

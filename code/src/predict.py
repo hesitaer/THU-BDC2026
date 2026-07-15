@@ -1,5 +1,6 @@
 import os
 import multiprocessing as mp
+import random
 
 import joblib
 import numpy as np
@@ -10,6 +11,11 @@ from tqdm import tqdm
 from config import config
 from model import StockTransformer
 from utils import engineer_features_39, engineer_features_158plus39, engineer_features_corr_filtered
+
+def init_worker(worker_seed):
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
 
 
 feature_cloums_map = {
@@ -95,7 +101,8 @@ def preprocess_predict_data(df, stockid2idx):
 
 	num_processes = min(10, mp.cpu_count())
 	print('cpus!!!!!!!!!!!!!!!!!!',mp.cpu_count())
-	with mp.Pool(processes=num_processes) as pool:
+	seed = config.get('seed', 42)
+	with mp.Pool(processes=num_processes, initializer=init_worker, initargs=(seed,)) as pool:
 		processed_list = list(tqdm(pool.imap(feature_engineer, groups), total=len(groups), desc='预测集特征工程'))
 
 	processed = pd.concat(processed_list).reset_index(drop=True)

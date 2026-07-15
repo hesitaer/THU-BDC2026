@@ -12,6 +12,7 @@ config = {
     'dropout': 0.15,
     'feature_num': feature_num,
     'max_grad_norm': 5.0,
+    'seed': 42,
 
     'pairwise_weight': 1,
     'base_weight': 1.0,
