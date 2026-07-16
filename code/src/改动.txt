@@ -180,3 +180,86 @@
 - 模型路径: ./model/60_corr_filtered
 - LightGBM集成: 暂不推荐使用
 - Transformer增强版: 训练中，待验证
+
+===========================================================
+模型改进总结报告（续）
+日期: 2026-07-15
+基准分数: 0.054 → 当前分数: 0.1049（提升+94%）
+===========================================================
+
+十一、LightGBM LambdaRank基线模型（重新设计）
+-----------------------------------------------------------
+
+1. LightGBM LambdaRank（排名目标，重新训练）
+   文件: code/src/lgb_lambdarank_baseline.py
+   修改内容:
+     - 使用lambdarank目标优化NDCG@5/10/20
+     - 标签: 基于超额收益的百分位排名（0-100），确保为整数类型
+     - 添加label_gain参数: 使用指数增益，强调Top股票排序
+     - 参数优化: num_leaves=63, learning_rate=0.01, feature_fraction=0.7
+     - 特征集: 158个相关性筛选特征（去除instrument）
+     - 日期分组训练: 每个日期作为一个query
+   效果: 验证集NDCG@5=0.5935，测试集得分0.0462
+
+2. LightGBM预测脚本
+   文件: code/src/lgb_predict.py
+   修改内容:
+     - 加载训练好的LightGBM模型和scaler
+     - 对最新日期所有股票进行预测打分
+     - 按分数排序选择Top5股票
+     - 使用softmax分配权重，限制在[0.02, 0.3]区间
+
+十二、集成融合策略（成功）
+-----------------------------------------------------------
+
+1. 双层融合策略
+   文件: code/src/ensemble_predict.py
+   修改内容:
+     - 加载Transformer和LightGBM两个模型
+     - 分别对300只股票进行预测
+     - z-score标准化: 消除两个模型的分数尺度差异
+     - 排名融合: rank_blend = 0.6 * (1/t_rank) + 0.4 * (1/l_rank)
+     - 分数融合: score_blend = 0.6 * t_norm + 0.4 * l_norm
+     - 最终融合: ensemble = 0.5 * score_blend + 0.5 * rank_blend
+     - 按ensemble分数排序选择Top5股票
+   效果: score_self得分0.1049（提升+94%）
+
+2. 融合策略对比
+   - 简单加权融合: 得分-0.0053（失败）
+   - 排名融合+分数融合: 得分0.1049（成功）
+   - 成功原因: 排名融合对分数尺度不敏感，两个模型的排名信息互补
+
+十三、新增文件清单
+-----------------------------------------------------------
+
+code/src/
+- lgb_lambdarank_baseline.py: LightGBM LambdaRank训练脚本
+- lgb_predict.py: LightGBM预测脚本
+- ensemble_predict.py: 集成融合预测脚本
+
+model/
+- lgb_lambdarank_baseline/lgb_lambdarank_model.txt: LightGBM模型文件
+- lgb_lambdarank_baseline/lgb_scaler.pkl: LightGBM标准化器
+
+十四、关键经验
+-----------------------------------------------------------
+
+1. 排名融合优于分数融合: 排名对分数尺度不敏感，更鲁棒
+2. 指数label_gain提升LightGBM性能: 强调Top股票排序
+3. 两个模型互补: Transformer擅长时序依赖，LightGBM擅长非线性特征交互
+4. 融合权重需要调优: 当前使用0.6(Transformer) + 0.4(LightGBM)
+5. 无需训练新模型: 直接在预测阶段融合已有模型输出即可
+
+十五、当前状态
+-----------------------------------------------------------
+
+- 当前最佳得分: 0.1049（集成融合模型）
+- 模型路径:
+  - Transformer: ./model/60_corr_filtered_enhanced/best_model.pth
+  - LightGBM: ./model/lgb_lambdarank_baseline/lgb_lambdarank_model.txt
+- 预测脚本: code/src/ensemble_predict.py
+- 分支: 0.1049（已上传至GitHub）
+
+
+
+
